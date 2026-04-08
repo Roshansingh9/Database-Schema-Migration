@@ -33,12 +33,17 @@ from openai import OpenAI
 # Configuration
 # ---------------------------------------------------------------------------
 
-# Auto-detect provider: Groq (free) takes priority if key is set,
-# otherwise fall back to HuggingFace router (required by openenv.yaml)
+# Auto-detect provider from environment variables.
+# Priority: GROQ > OPENROUTER > HF_TOKEN/API_KEY
+# Override any value with the explicit env vars API_BASE_URL / MODEL_NAME / API_KEY.
 if os.getenv("GROQ_API_KEY"):
     API_KEY      = os.getenv("GROQ_API_KEY", "")
     API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
     MODEL_NAME   = os.getenv("MODEL_NAME",   "llama-3.3-70b-versatile")
+elif os.getenv("OPENROUTER_API_KEY"):
+    API_KEY      = os.getenv("OPENROUTER_API_KEY", "")
+    API_BASE_URL = os.getenv("API_BASE_URL", "https://openrouter.ai/api/v1")
+    MODEL_NAME   = os.getenv("MODEL_NAME",   "meta-llama/llama-3.3-70b-instruct:free")
 else:
     API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
     API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
