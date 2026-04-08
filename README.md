@@ -238,17 +238,22 @@ curl http://localhost:7860/tasks
 
 ### Run inference (baseline)
 
-```bash
-# Single task
-export HF_TOKEN=your_hf_token
-export TASK_NAME=add_columns
-python inference.py
+The default LLM provider is **Groq** (free tier, no credit card needed).
+Get your key at https://console.groq.com → API Keys.
 
-# All three tasks
+```bash
+# Groq (default, free)
+export GROQ_API_KEY=gsk_your_groq_key
 export RUN_ALL_TASKS=1
 python inference.py
 
-# Custom model / endpoint
+# Single task only
+export GROQ_API_KEY=gsk_your_groq_key
+export TASK_NAME=normalize_orders
+python inference.py
+
+# HuggingFace router (alternative)
+export HF_TOKEN=your_hf_token
 export API_BASE_URL=https://router.huggingface.co/v1
 export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct
 python inference.py
@@ -303,9 +308,10 @@ schema-migration-openenv/
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `HF_TOKEN` | ✅ | — | HuggingFace API token |
-| `API_BASE_URL` | ❌ | `https://router.huggingface.co/v1` | LLM API endpoint |
-| `MODEL_NAME` | ❌ | `Qwen/Qwen2.5-72B-Instruct` | Model identifier |
+| `GROQ_API_KEY` | ✅ (recommended) | — | Groq API key — free at console.groq.com |
+| `HF_TOKEN` | ✅ (alternative) | — | HuggingFace API token (fallback if no GROQ_API_KEY) |
+| `API_BASE_URL` | ❌ | `https://api.groq.com/openai/v1` | LLM API endpoint |
+| `MODEL_NAME` | ❌ | `llama-3.3-70b-versatile` | Model identifier |
 | `TASK_NAME` | ❌ | `add_columns` | Task to run in inference |
 | `RUN_ALL_TASKS` | ❌ | `false` | Set to `1` to run all 3 tasks |
 | `ENV_BASE_URL` | ❌ | `http://localhost:7860` | OpenEnv server URL |

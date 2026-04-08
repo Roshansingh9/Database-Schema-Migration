@@ -33,9 +33,9 @@ from openai import OpenAI
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+API_KEY      = os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
+MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
 TASK_NAME    = os.getenv("TASK_NAME", "add_columns")
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 BENCHMARK    = "schema-migration-openenv"
@@ -237,7 +237,12 @@ def run_task(client: OpenAI, task_name: str) -> float:
             messages.append({"role": "assistant", "content": raw_response})
             action_dict = parse_action(raw_response)
         except Exception as exc:
-            error_msg = str(exc)[:100]
+            error_msg = str(exc)[:200]
+            # Fatal errors (quota exhausted, invalid key) — abort immediately
+            exc_str = str(exc)
+            if any(code in exc_str for code in ("402", "401", "403", "insufficient_quota", "depleted")):
+                print(f"[FATAL] LLM API error: {error_msg}", flush=True)
+                break
             action_dict = {"action_type": "inspect_schema"}
 
         action_type = action_dict.get("action_type", "inspect_schema")
