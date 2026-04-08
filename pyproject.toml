@@ -14,6 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
+server = "server.app:main"
 serve = "server.app:main"
 schema-migration-openenv = "server.app:main"
 
