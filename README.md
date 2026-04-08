@@ -1,3 +1,15 @@
+---
+title: Schema Migration OpenEnv
+emoji: 🗄️
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+tags:
+  - openenv
+---
+
+
 # Schema Migration OpenEnv
 
 **A real-world RL environment where AI agents perform database schema migrations against live SQLite databases.**
