@@ -137,7 +137,7 @@ def _grade_easy(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
             notes.append(f"default created_at: 0/0.5 (got {row.get('created_at')})")
 
     total_max = 1.5 + 3 * 1.0 + 3 * 0.5 + 0.5 + 0.5  # = 7.5
-    score = round(max(0.0, min(1.0, earned / total_max)), 4)
+    score = round(max(0.001, min(0.999, earned / total_max)), 4)
     return score, notes
 
 
@@ -278,7 +278,7 @@ def _grade_medium(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
         notes.append("no duplicate customers: 0/0.5")
 
     total_max = 1.5 + 1.5 + 1.5 + 2.0 + 1.0 + 1.5 + 0.5  # = 9.5
-    score = round(max(0.0, min(1.0, earned / total_max)), 4)
+    score = round(max(0.001, min(0.999, earned / total_max)), 4)
     return score, notes
 
 
@@ -461,7 +461,7 @@ def _grade_hard(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
         notes.append("employee_records not found: 0/1.0")
 
     total_max = 1.5 + 1.0 + 1.0 + 1.5 + 1.0 + 2.0 + 1.0  # = 9.0
-    score = round(max(0.0, min(1.0, earned / total_max)), 4)
+    score = round(max(0.001, min(0.999, earned / total_max)), 4)
     return score, notes
 
 

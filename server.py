@@ -81,8 +81,94 @@ class StepResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @app.get("/health")
-def health() -> Dict[str, str]:
-    return {"status": "ok", "env": "schema-migration-openenv", "version": "1.0.0"}
+def health() -> Dict[str, Any]:
+    return {"status": "healthy", "env": "schema-migration-openenv", "version": "1.0.0"}
+
+
+@app.get("/metadata")
+def metadata() -> Dict[str, Any]:
+    return {
+        "name": "schema-migration-openenv",
+        "description": (
+            "An OpenEnv-compatible RL environment where AI agents perform real "
+            "database schema migrations against live SQLite databases. "
+            "Graded by actually executing SQL and verifying database state."
+        ),
+        "version": "1.0.0",
+        "author": "Roshan Kumar Singh",
+    }
+
+
+@app.get("/schema")
+def schema_endpoint() -> Dict[str, Any]:
+    return {
+        "action": {
+            "type": "object",
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "enum": ["write_migration", "execute", "rollback",
+                             "inspect_schema", "run_query", "submit"],
+                },
+                "sql": {"type": "string", "description": "SQL payload (optional)"},
+            },
+            "required": ["action_type"],
+        },
+        "observation": {
+            "type": "object",
+            "properties": {
+                "current_schema": {"type": "array"},
+                "migration_spec": {"type": "string"},
+                "requirements": {"type": "array"},
+                "migration_buffer": {"type": "string"},
+                "execution_history": {"type": "array"},
+                "last_result": {"type": "object"},
+                "step": {"type": "integer"},
+                "max_steps": {"type": "integer"},
+                "partial_score": {"type": "number"},
+                "hint": {"type": "string"},
+            },
+        },
+        "state": {
+            "type": "object",
+            "properties": {
+                "env_name": {"type": "string"},
+                "version": {"type": "string"},
+                "task": {"type": "string"},
+                "difficulty": {"type": "string"},
+                "step": {"type": "integer"},
+                "max_steps": {"type": "integer"},
+                "done": {"type": "boolean"},
+                "cumulative_reward": {"type": "number"},
+            },
+        },
+    }
+
+
+@app.post("/mcp")
+async def mcp(request: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Minimal JSON-RPC 2.0 endpoint for MCP compatibility."""
+    req = request or {}
+    return {
+        "jsonrpc": "2.0",
+        "id": req.get("id"),
+        "result": {
+            "tools": [
+                {
+                    "name": "reset",
+                    "description": "Reset the environment with a given task",
+                },
+                {
+                    "name": "step",
+                    "description": "Execute one action in the environment",
+                },
+                {
+                    "name": "grade",
+                    "description": "Get the current grader score without ending the episode",
+                },
+            ]
+        },
+    }
 
 
 @app.get("/tasks")
@@ -131,7 +217,7 @@ def step(request: StepRequest) -> StepResponse:
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return StepResponse(
-        observation=obs.dict(),
+        observation=obs.model_dump(),
         reward=reward.value,
         done=done,
         info={**info, "reward_message": reward.message},
