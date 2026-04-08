@@ -33,9 +33,16 @@ from openai import OpenAI
 # Configuration
 # ---------------------------------------------------------------------------
 
-API_KEY      = os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME", "llama-3.3-70b-versatile")
+# Auto-detect provider: Groq (free) takes priority if key is set,
+# otherwise fall back to HuggingFace router (required by openenv.yaml)
+if os.getenv("GROQ_API_KEY"):
+    API_KEY      = os.getenv("GROQ_API_KEY", "")
+    API_BASE_URL = os.getenv("API_BASE_URL", "https://api.groq.com/openai/v1")
+    MODEL_NAME   = os.getenv("MODEL_NAME",   "llama-3.3-70b-versatile")
+else:
+    API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
+    API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+    MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
 TASK_NAME    = os.getenv("TASK_NAME", "add_columns")
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 BENCHMARK    = "schema-migration-openenv"
@@ -223,27 +230,47 @@ def run_task(client: OpenAI, task_name: str) -> float:
         user_prompt = build_user_prompt(obs, step, last_reward)
         messages.append({"role": "user", "content": user_prompt})
 
-        # Get action from model
+        # Trim history: keep system prompt + last 8 messages (4 exchanges)
+        # Prevents token usage from growing unboundedly across long episodes
+        if len(messages) > 9:
+            messages = [messages[0]] + messages[-8:]
+
+        # Get action from model — retry up to 3× on transient rate limits (429)
         error_msg: Optional[str] = None
         action_dict: Dict[str, Any] = {"action_type": "inspect_schema"}
-        try:
-            completion = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-                temperature=TEMPERATURE,
-                max_tokens=MAX_TOKENS,
-            )
-            raw_response = completion.choices[0].message.content or ""
-            messages.append({"role": "assistant", "content": raw_response})
-            action_dict = parse_action(raw_response)
-        except Exception as exc:
-            error_msg = str(exc)[:200]
-            # Fatal errors (quota exhausted, invalid key) — abort immediately
-            exc_str = str(exc)
-            if any(code in exc_str for code in ("402", "401", "403", "insufficient_quota", "depleted")):
-                print(f"[FATAL] LLM API error: {error_msg}", flush=True)
+        for attempt in range(4):  # 1 try + 3 retries
+            try:
+                completion = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=messages,
+                    temperature=TEMPERATURE,
+                    max_tokens=MAX_TOKENS,
+                )
+                raw_response = completion.choices[0].message.content or ""
+                messages.append({"role": "assistant", "content": raw_response})
+                action_dict = parse_action(raw_response)
+                error_msg = None
+                break  # success
+            except Exception as exc:
+                exc_str = str(exc)
+                error_msg = exc_str[:200]
+                # Hard-fatal: quota exhausted / auth failure — stop immediately
+                if any(c in exc_str for c in ("402", "401", "403", "insufficient_quota", "depleted")):
+                    print(f"[FATAL] LLM API error: {error_msg}", flush=True)
+                    action_dict = {"action_type": "__fatal__"}
+                    break
+                # Soft rate-limit (429): backoff and retry
+                if "429" in exc_str and attempt < 3:
+                    wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
+                    print(f"[RATELIMIT] 429 on attempt {attempt+1}, waiting {wait}s...", flush=True)
+                    time.sleep(wait)
+                    continue
+                # Other error or retries exhausted
+                action_dict = {"action_type": "inspect_schema"}
                 break
-            action_dict = {"action_type": "inspect_schema"}
+
+        if action_dict.get("action_type") == "__fatal__":
+            break
 
         action_type = action_dict.get("action_type", "inspect_schema")
         sql = action_dict.get("sql")
@@ -319,7 +346,7 @@ def main() -> None:
         score = run_task(client, task)
         scores[task] = score
         print(f"\nTask '{task}' final score: {score:.3f}", flush=True)
-        time.sleep(1)  # Brief pause between tasks
+        time.sleep(3)  # Brief pause between tasks to let rate limits breathe
 
     print(f"\n{'='*60}", flush=True)
     print("SUMMARY", flush=True)
