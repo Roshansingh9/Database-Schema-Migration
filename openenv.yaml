@@ -1,0 +1,128 @@
+name: schema-migration-openenv
+version: "1.0.0"
+description: >
+  A real-world RL environment where AI agents perform database schema migrations
+  against live in-memory SQLite databases. The agent writes SQL, executes it,
+  inspects the resulting schema, verifies data integrity, and submits for a
+  deterministic score. Grading is execution-based — the database either contains
+  the correct data or it does not.
+
+tags:
+  - openenv
+  - database
+  - sql
+  - schema-migration
+  - data-engineering
+  - real-world
+
+author: Roshan Kumar Singh
+license: MIT
+
+tasks:
+  - name: add_columns
+    difficulty: easy
+    description: >
+      Add three new columns (stock_quantity, category, created_at) to the products
+      table with correct types, constraints, and default values. All 5 existing
+      rows must be preserved.
+    max_steps: 15
+    success_threshold: 0.7
+
+  - name: normalize_orders
+    difficulty: medium
+    description: >
+      Normalize a denormalized orders table into three properly related tables:
+      customers, products, and orders. All 7 order records must be preserved.
+      Foreign key constraints must hold with zero violations.
+    max_steps: 25
+    success_threshold: 0.6
+
+  - name: refactor_employees
+    difficulty: hard
+    description: >
+      Refactor a legacy employee_records table into a normalized 3-table schema
+      (departments, job_titles, employees) and create a compatibility VIEW named
+      employee_records so that 6 test queries return identical results. The
+      migration must preserve all 10 employees and pass FK integrity checks.
+    max_steps: 35
+    success_threshold: 0.5
+
+observation_space:
+  type: object
+  description: >
+    Structured observation containing the current database schema (all tables,
+    columns with types and FK relationships, row counts), the migration
+    specification, requirements checklist, migration buffer, execution history,
+    last action result, step counter, and partial score.
+  fields:
+    current_schema: "List of TableSchema objects (name, columns, row_count)"
+    migration_spec: "Natural-language description of the migration to perform"
+    requirements: "Bullet-point checklist of required migration outcomes"
+    migration_buffer: "SQL staged for execution but not yet applied"
+    execution_history: "List of all past ExecutionResult objects"
+    last_result: "Result of the most recent action"
+    step: "Current step number (0-indexed)"
+    max_steps: "Step budget for this task"
+    partial_score: "Running cumulative reward [0.0, 1.0]"
+    hint: "Contextual hint when agent appears stuck (optional)"
+
+action_space:
+  type: object
+  description: >
+    Discrete action type with optional SQL payload.
+  actions:
+    write_migration:
+      description: "Stage SQL in the migration buffer (syntax-checked before staging)"
+      fields: ["action_type", "sql"]
+    execute:
+      description: "Execute the staged migration buffer against the live database"
+      fields: ["action_type"]
+    rollback:
+      description: "Restore the database to the pre-episode initial state"
+      fields: ["action_type"]
+    inspect_schema:
+      description: "Read the current schema (tables, columns, types, FK relationships)"
+      fields: ["action_type"]
+    run_query:
+      description: "Execute a SELECT query to inspect data (read-only)"
+      fields: ["action_type", "sql"]
+    submit:
+      description: "Finalize the episode and receive the definitive grader score"
+      fields: ["action_type"]
+
+reward:
+  type: continuous
+  range: [-1.0, 1.0]
+  description: >
+    Dense per-step rewards provide continuous feedback:
+    - write_migration (success): +0.02 (syntax valid, SQL staged)
+    - write_migration (failure): -0.03 (syntax error, nothing staged)
+    - execute (success): +0.05 (migration applied to live DB)
+    - execute (failure): -0.05 (execution error)
+    - rollback: -0.03 to -0.30 (increasing penalty per rollback count)
+    - inspect_schema / run_query: 0.0 (free information actions)
+    - submit: grader_score (definitive reward, replaces cumulative score)
+    - budget_exceeded: -0.05 additional penalty
+
+  grader: >
+    Deterministic, execution-based grader. Checks: table existence,
+    row counts, column presence, FK integrity (via PRAGMA foreign_key_check),
+    and for the hard task, 6 explicit test queries through the compatibility view.
+    Score range: [0.0, 1.0]. Cannot be gamed by keyword stuffing.
+
+docker:
+  base_image: python:3.11-slim
+  port: 7860
+  startup_command: "python server.py"
+
+inference:
+  script: inference.py
+  required_env_vars:
+    - HF_TOKEN
+    - API_BASE_URL
+    - MODEL_NAME
+  optional_env_vars:
+    - TASK_NAME
+    - ENV_BASE_URL
+    - RUN_ALL_TASKS
+  max_runtime_minutes: 18
