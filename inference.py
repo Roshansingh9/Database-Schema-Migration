@@ -226,6 +226,7 @@ def run_task(client: OpenAI, task_name: str) -> float:
     submitted = False
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
+    fatal = False
     for step in range(1, max_steps + 1):
         user_prompt = build_user_prompt(obs, step, last_reward)
         messages.append({"role": "user", "content": user_prompt})
@@ -258,6 +259,7 @@ def run_task(client: OpenAI, task_name: str) -> float:
                 if any(c in exc_str for c in ("402", "401", "403", "insufficient_quota", "depleted")):
                     print(f"[FATAL] LLM API error: {error_msg}", flush=True)
                     action_dict = {"action_type": "__fatal__"}
+                    fatal = True
                     break
                 # Soft rate-limit (429): backoff and retry
                 if "429" in exc_str and attempt < 3:
@@ -305,8 +307,10 @@ def run_task(client: OpenAI, task_name: str) -> float:
             log_step(step=step, action=action_type, reward=0.0, done=False, error=error_msg)
             rewards.append(0.0)
 
-    # If agent didn't explicitly submit (budget exceeded or loop exited early), force one
-    if not submitted:
+    # If agent didn't explicitly submit (budget exceeded or loop exited early), force one.
+    # But NOT on fatal auth/quota errors — the env was just reset and has no progress;
+    # force-submitting would score a stale previous episode.
+    if not submitted and not fatal:
         try:
             result = env_step("submit")
             final_score = result.get("observation", {}).get("partial_score", 0.0)
@@ -329,7 +333,7 @@ def run_task(client: OpenAI, task_name: str) -> float:
 
 def main() -> None:
     if not API_KEY:
-        print("ERROR: HF_TOKEN environment variable not set.", file=sys.stderr)
+        print("ERROR: Set GROQ_API_KEY (recommended, free) or HF_TOKEN.", file=sys.stderr)
         sys.exit(1)
 
     client = OpenAI(api_key=API_KEY, base_url=API_BASE_URL)
