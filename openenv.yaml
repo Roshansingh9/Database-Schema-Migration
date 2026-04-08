@@ -32,8 +32,10 @@ app:
   state_endpoint: /state
 
 tasks:
-  - name: add_columns
-    difficulty: easy
+  - id: "add_columns"
+    name: "Add Columns Migration"
+    grader: "graders.schema_graders:AddColumnsGrader"
+    difficulty: "easy"
     max_steps: 15
     success_threshold: 0.7
     description: >
@@ -41,8 +43,10 @@ tasks:
       table with correct types, constraints, and default values. All 5 existing
       rows must be preserved.
 
-  - name: normalize_orders
-    difficulty: medium
+  - id: "normalize_orders"
+    name: "Normalize Orders Schema"
+    grader: "graders.schema_graders:NormalizeOrdersGrader"
+    difficulty: "medium"
     max_steps: 25
     success_threshold: 0.6
     description: >
@@ -50,8 +54,10 @@ tasks:
       customers, products, and orders. All 7 order records must be preserved.
       Foreign key constraints must hold with zero violations.
 
-  - name: refactor_employees
-    difficulty: hard
+  - id: "refactor_employees"
+    name: "Refactor Employees Table"
+    grader: "graders.schema_graders:RefactorEmployeesGrader"
+    difficulty: "hard"
     max_steps: 35
     success_threshold: 0.5
     description: >
