@@ -58,7 +58,7 @@ class MigrationDB:
         lines: List[str] = []
         assert self._conn
         for row in self._conn.execute(
-            "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
+            "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         ):
             lines.append(row["sql"] + ";")
             tname = row["name"]
@@ -151,7 +151,7 @@ class MigrationDB:
         assert self._conn
         tables: List[TableSchema] = []
         for row in self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         ):
             tname = row[0]
             columns = self._get_columns(tname)
