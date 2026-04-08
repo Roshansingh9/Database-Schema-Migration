@@ -113,10 +113,10 @@ class SchemaMigrationEnv:
             step_reward -= 0.05
             self._done = True
 
-        self._cumulative_reward = max(0.0, min(1.0, self._cumulative_reward + step_reward))
+        self._cumulative_reward += step_reward  # uncapped — clamped only at display time
 
         obs = self._make_observation(last_result=result)
-        obs.partial_score = self._cumulative_reward
+        obs.partial_score = max(0.0, min(1.0, self._cumulative_reward))
         self._last_obs = obs
 
         reward = MigrationReward(
@@ -150,7 +150,7 @@ class SchemaMigrationEnv:
             "max_steps": self._task.max_steps,
             "done": self._done,
             "migration_buffer": self._migration_buffer,
-            "schema": [t.dict() for t in schema],
+            "schema": [t.model_dump() for t in schema],
             "execution_history_length": len(self._execution_history),
             "cumulative_reward": round(self._cumulative_reward, 4),
             "rollback_count": self._rollback_count,

@@ -118,7 +118,7 @@ def reset(request: Optional[ResetRequest] = None) -> Dict[str, Any]:
         )
     _env = SchemaMigrationEnv(task_name=task_name)
     obs = _env.reset()
-    return obs.dict()
+    return obs.model_dump()
 
 
 @app.post("/step")

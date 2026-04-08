@@ -194,7 +194,7 @@ Each task uses an **execution-based grader** — a Python function that queries 
 
 ```bash
 # Clone and install
-git clone https://huggingface.co/spaces/YOUR_USERNAME/schema-migration-openenv
+git clone https://huggingface.co/spaces/RoshanSingh/schema-migration-openenv
 cd schema-migration-openenv
 pip install -r requirements.txt
 
@@ -310,6 +310,26 @@ schema-migration-openenv/
 | `RUN_ALL_TASKS` | ❌ | `false` | Set to `1` to run all 3 tasks |
 | `ENV_BASE_URL` | ❌ | `http://localhost:7860` | OpenEnv server URL |
 | `PORT` | ❌ | `7860` | Server port |
+
+---
+
+---
+
+## Stability & Bug Fixes
+
+The following edge cases are explicitly handled:
+
+| Fix | Detail |
+|-----|--------|
+| `sqlite_sequence` excluded from snapshots | SQLite's internal autoincrement table is now filtered from `snapshot_sql()` and `get_schema()` — prevents rollback failures on AUTOINCREMENT tables |
+| Escaped SQL quotes (`''`) in splitter | `_split_statements` now handles `'can''t'`-style escaped quotes without splitting mid-string |
+| WAL journal mode removed | `PRAGMA journal_mode = WAL` is incompatible with in-memory SQLite and was silently ignored; removed to avoid confusion |
+| Grader row-count truthiness | Hard grader partial-credit checks now use `is not None` instead of bare truthiness — prevents `-1` (table missing) from being treated as a non-zero count |
+| Cumulative reward not clamped mid-episode | Step rewards now accumulate freely; `partial_score` is clamped to `[0.0, 1.0]` only when surfaced in observations |
+| Forced submit always fires | Inference script uses a `submitted` flag so the final graded submit is guaranteed even when the agent runs out of steps mid-migration |
+| Pydantic v2 Config syntax | `class Config: use_enum_values` updated to `model_config = ConfigDict(use_enum_values=True)` |
+| Dead code removed | Unused `cols` dict computation removed from easy grader |
+| `Dict` import moved to top | Late `from typing import Dict` at bottom of `task_definitions.py` moved to the standard imports block |
 
 ---
 

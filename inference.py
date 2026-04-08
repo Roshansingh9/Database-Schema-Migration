@@ -216,6 +216,7 @@ def run_task(client: OpenAI, task_name: str) -> float:
     rewards: List[float] = []
     last_reward = 0.0
     final_score = 0.0
+    submitted = False
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     for step in range(1, max_steps + 1):
@@ -254,6 +255,7 @@ def run_task(client: OpenAI, task_name: str) -> float:
             # Extract score from final submission
             if done and action_type == "submit":
                 final_score = obs.get("partial_score", 0.0)
+                submitted = True
 
             log_step(
                 step=step,
@@ -271,8 +273,8 @@ def run_task(client: OpenAI, task_name: str) -> float:
             log_step(step=step, action=action_type, reward=0.0, done=False, error=error_msg)
             rewards.append(0.0)
 
-    # If agent didn't explicitly submit, force a graded submit
-    if not rewards or obs.get("partial_score", 0.0) == 0.0:
+    # If agent didn't explicitly submit (budget exceeded or loop exited early), force one
+    if not submitted:
         try:
             result = env_step("submit")
             final_score = result.get("observation", {}).get("partial_score", 0.0)

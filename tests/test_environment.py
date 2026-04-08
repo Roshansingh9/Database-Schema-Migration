@@ -284,6 +284,9 @@ class TestGraderMedium:
             ALTER TABLE new_orders RENAME TO orders;
         """)
 
+        # Verify the INSERT actually populated orders
+        assert env._db.get_row_count("orders") == 7, "orders should have 7 rows after migration"
+
         score, notes = env.grade()
         assert score >= 0.85, f"Expected >=0.85, got {score}. Notes: {notes}"
 

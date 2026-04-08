@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import textwrap
 from dataclasses import dataclass, field
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from env.database import MigrationDB
 
@@ -104,8 +104,6 @@ def _grade_easy(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
     ]
     for cname, ctype, nullable in col_checks:
         if db.column_exists("products", cname):
-            cols = {c.name: c for c in db.get_schema()[0].columns
-                    if db.get_schema()[0].name == "products"}
             # Just check existence — type enforcement is best-effort in SQLite
             earned += 1.0
             notes.append(f"{cname}: 1.0/1.0 (present)")
@@ -400,7 +398,7 @@ def _grade_hard(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
     if nd == 4:
         earned += 1.0
         notes.append("departments rows: 1.0/1.0")
-    elif nd and nd > 0:
+    elif nd is not None and nd > 0:
         earned += 0.3
         notes.append(f"departments rows: 0.3/1.0 (got {nd}, expected 4)")
     else:
@@ -411,7 +409,7 @@ def _grade_hard(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
     if njt == 9:
         earned += 1.0
         notes.append("job_titles rows: 1.0/1.0")
-    elif njt and njt > 0:
+    elif njt is not None and njt > 0:
         earned += 0.3
         notes.append(f"job_titles rows: 0.3/1.0 (got {njt}, expected 9)")
     else:
@@ -422,7 +420,7 @@ def _grade_hard(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
     if ne == 10:
         earned += 1.5
         notes.append("employees rows: 1.5/1.5")
-    elif ne and ne > 0:
+    elif ne is not None and ne > 0:
         earned += 0.5
         notes.append(f"employees rows: 0.5/1.5 (got {ne})")
     else:
@@ -519,4 +517,3 @@ TASKS: Dict[str, Task] = {
     ),
 }
 
-from typing import Dict  # noqa: E402 (needed after dataclass def)

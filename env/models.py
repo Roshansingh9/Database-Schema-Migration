@@ -8,7 +8,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ---------------------------------------------------------------------------
@@ -38,8 +38,7 @@ class MigrationAction(BaseModel):
         description="SQL statement(s) for WRITE_MIGRATION or RUN_QUERY actions",
     )
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 # ---------------------------------------------------------------------------

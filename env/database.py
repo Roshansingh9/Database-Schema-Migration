@@ -35,7 +35,6 @@ class MigrationDB:
         """
         self._conn = sqlite3.connect(":memory:", check_same_thread=False)
         self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.execute("PRAGMA journal_mode = WAL")
         self._conn.row_factory = sqlite3.Row
         try:
             for stmt in self._split_statements(seed_sql):
@@ -242,15 +241,22 @@ class MigrationDB:
 
     @staticmethod
     def _split_statements(sql: str) -> List[str]:
-        """Split SQL on semicolons while respecting string literals."""
+        """Split SQL on semicolons while respecting string literals and '' escapes."""
         stmts: List[str] = []
         buf = ""
         in_str = False
         str_char = ""
-        for ch in sql:
+        i = 0
+        while i < len(sql):
+            ch = sql[i]
             if in_str:
                 buf += ch
                 if ch == str_char:
+                    # Handle SQLite '' escaped quotes (e.g. 'can''t')
+                    if i + 1 < len(sql) and sql[i + 1] == str_char:
+                        buf += sql[i + 1]
+                        i += 2
+                        continue
                     in_str = False
             elif ch in ("'", '"'):
                 in_str = True
@@ -263,6 +269,7 @@ class MigrationDB:
                 buf = ""
             else:
                 buf += ch
+            i += 1
         buf = buf.strip()
         if buf:
             stmts.append(buf)
