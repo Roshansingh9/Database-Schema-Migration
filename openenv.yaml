@@ -27,9 +27,6 @@ runtime:
 app:
   port: 7860
   health_check: /health
-  reset_endpoint: /reset
-  step_endpoint: /step
-  state_endpoint: /state
 
 tasks:
   - id: "add_columns"
@@ -66,93 +63,14 @@ tasks:
       employee_records so that 6 test queries return identical results. The
       migration must preserve all 10 employees and pass FK integrity checks.
 
-observation_space:
-  type: object
-  description: >
-    Structured observation containing the current database schema (all tables,
-    columns with types and FK relationships, row counts), the migration
-    specification, requirements checklist, migration buffer, execution history,
-    last action result, step counter, and partial score.
-  properties:
-    current_schema:
-      type: array
-      description: "List of TableSchema objects (name, columns, row_count)"
-    migration_spec:
-      type: string
-      description: "Natural-language description of the migration to perform"
-    requirements:
-      type: array
-      description: "Bullet-point checklist of required migration outcomes"
-    migration_buffer:
-      type: string
-      description: "SQL staged for execution but not yet applied"
-    execution_history:
-      type: array
-      description: "List of all past ExecutionResult objects"
-    last_result:
-      type: object
-      description: "Result of the most recent action"
-    step:
-      type: integer
-      description: "Current step number (0-indexed)"
-    max_steps:
-      type: integer
-      description: "Step budget for this task"
-    partial_score:
-      type: number
-      description: "Running cumulative reward [0.0, 1.0]"
-    hint:
-      type: string
-      description: "Contextual hint when agent appears stuck (optional)"
-
-action_space:
-  type: object
-  description: "Discrete action type with optional SQL payload."
-  actions:
-    write_migration:
-      description: "Stage SQL in the migration buffer (syntax-checked before staging)"
-      required: ["action_type", "sql"]
-    execute:
-      description: "Execute the staged migration buffer against the live database"
-      required: ["action_type"]
-    rollback:
-      description: "Restore the database to the pre-episode initial state"
-      required: ["action_type"]
-    inspect_schema:
-      description: "Read the current schema (tables, columns, types, FK relationships)"
-      required: ["action_type"]
-    run_query:
-      description: "Execute a SELECT query to inspect data (read-only)"
-      required: ["action_type", "sql"]
-    submit:
-      description: "Finalize the episode and receive the definitive grader score"
-      required: ["action_type"]
-
-reward:
-  type: continuous
-  range: [-1.0, 1.0]
-  description: >
-    Dense per-step rewards provide continuous feedback:
-    write_migration success +0.02, failure -0.03;
-    execute success +0.05, failure -0.05;
-    rollback -0.03 to -0.30 increasing per count;
-    inspect_schema/run_query 0.0;
-    submit returns the definitive grader score [0.0, 1.0];
-    budget exceeded -0.05 additional penalty.
-  grader: >
-    Deterministic execution-based grader. Checks table existence, row counts,
-    column presence, FK integrity (via PRAGMA foreign_key_check), and for the
-    hard task 6 explicit test queries through the compatibility view.
-    Score range [0.0, 1.0]. Cannot be gamed by keyword stuffing.
-
 inference:
   script: inference.py
-  required_env_vars:
+  optional_env_vars:
+    - GROQ_API_KEY
+    - OPENROUTER_API_KEY
     - HF_TOKEN
     - API_BASE_URL
     - MODEL_NAME
-  optional_env_vars:
-    - GROQ_API_KEY
     - TASK_NAME
     - ENV_BASE_URL
     - RUN_ALL_TASKS

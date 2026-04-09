@@ -109,14 +109,18 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 def env_reset(task: str) -> Dict[str, Any]:
     resp = requests.post(f"{ENV_BASE_URL}/reset", json={"task": task}, timeout=30)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    # SDK wraps obs in {"observation": {...}, "done": false, "reward": null}
+    # Unwrap so callers get the obs dict directly (same interface as before)
+    return data.get("observation", data)
 
 
 def env_step(action_type: str, sql: Optional[str] = None) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {"action_type": action_type}
+    # SDK /step expects {"action": {"action_type": "...", "sql": "..."}}
+    action: Dict[str, Any] = {"action_type": action_type}
     if sql:
-        payload["sql"] = sql
-    resp = requests.post(f"{ENV_BASE_URL}/step", json=payload, timeout=30)
+        action["sql"] = sql
+    resp = requests.post(f"{ENV_BASE_URL}/step", json={"action": action}, timeout=30)
     resp.raise_for_status()
     return resp.json()
 

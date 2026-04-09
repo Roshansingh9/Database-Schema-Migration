@@ -86,7 +86,7 @@ def _grade_easy(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
 
     # 1. Table still exists
     if not db.table_exists("products"):
-        return 0.0, ["FAIL: products table missing"]
+        return 0.001, ["FAIL: products table missing"]
 
     # 2. Row count preserved
     rc = db.get_row_count("products")

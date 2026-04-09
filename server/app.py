@@ -1,42 +1,78 @@
 """
-server/app.py — ASGI entry point for multi-mode / package-based deployment.
+FastAPI application for Schema Migration OpenEnv.
 
-Exports the FastAPI `app` object so this module works as:
-  uvicorn server.app:app --host 0.0.0.0 --port 7860
+Uses create_app() from openenv-core, which auto-generates all standard endpoints:
+    GET  /health     — {"status": "healthy"}
+    GET  /metadata   — environment name + description
+    GET  /schema     — action / observation / state JSON schemas
+    GET  /state      — current MigrationState
+    POST /reset      — reset episode, returns MigrationObservation
+    POST /step       — execute action, returns observation + reward + done
+    POST /mcp        — JSON-RPC 2.0 endpoint
+    WS   /ws         — WebSocket for persistent sessions
+    GET  /docs       — Swagger UI
 
-Also provides a `main()` CLI entry point registered in pyproject.toml:
-  schema-migration-openenv
+A singleton environment instance is used for HTTP calls so that state
+persists across the multi-step reset → step → ... → submit sequence that
+inference.py relies on.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 
-# Ensure the project root is importable (needed when installed as a package)
+# Ensure project root is importable when this module is loaded via uvicorn
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-# Load root server.py as a named module — avoids the server/ package shadowing it
-_spec = importlib.util.spec_from_file_location(
-    "__root_server__",
-    os.path.join(_root, "server.py"),
+from openenv.core.env_server import create_app
+from server.environment import MigrationEnvironment
+from models import MigrationAction, MigrationObservation
+
+# ---------------------------------------------------------------------------
+# Singleton: same instance returned for every HTTP call so state persists
+# across the multi-step episode that inference.py executes.
+# close() is a no-op on MigrationEnvironment, so the env is never destroyed.
+# ---------------------------------------------------------------------------
+_SINGLETON = MigrationEnvironment()
+
+
+def _env_factory() -> MigrationEnvironment:
+    return _SINGLETON
+
+
+app = create_app(
+    _env_factory,
+    MigrationAction,
+    MigrationObservation,
+    env_name="schema-migration-openenv",
+    max_concurrent_envs=1,
 )
-_mod = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
-_spec.loader.exec_module(_mod)  # type: ignore[union-attr]
-
-# Re-export the FastAPI application
-app = _mod.app
 
 
-def main() -> None:
-    """CLI entry point: start the server (used by project.scripts)."""
+# ---------------------------------------------------------------------------
+# Custom endpoint: /grade
+# Not part of the standard SDK API but used by inference.py for the fatal
+# fallback path (reports seed-state score when the LLM is unavailable).
+# ---------------------------------------------------------------------------
+@app.post("/grade")
+def grade_current():
+    """Run the grader on the current DB without ending the episode."""
+    score, notes = _SINGLETON.grade()
+    return {"score": score, "notes": notes}
+
+
+# ---------------------------------------------------------------------------
+# Entry point for uv run server / pyproject.toml [project.scripts]
+# ---------------------------------------------------------------------------
+def main(host: str = "0.0.0.0", port: int = 7860) -> None:
+    """Start the server. Called by the 'server' console script."""
     import uvicorn
 
-    port = int(os.getenv("PORT", "7860"))
-    uvicorn.run("server.app:app", host="0.0.0.0", port=port, reload=False)
+    port = int(os.getenv("PORT", str(port)))
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":
