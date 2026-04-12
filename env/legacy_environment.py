@@ -99,7 +99,10 @@ class SchemaMigrationEnv:
             self._done = True
             self._execution_logs.append("Step budget exceeded before submit")
 
-        self._cumulative_reward += step_reward
+        if action.action_type == ActionType.SUBMIT:
+            self._cumulative_reward = step_reward
+        else:
+            self._cumulative_reward += step_reward
         done = self._done
 
         obs = self._make_observation(last_result=result)
@@ -258,7 +261,6 @@ class SchemaMigrationEnv:
             total=total,
             notes=notes,
         )
-        self._cumulative_reward = breakdown.total
         return (
             ExecutionResult(
                 success=True,

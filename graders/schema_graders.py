@@ -45,10 +45,12 @@ def _extract_score(observation: Any, task_name: str) -> float:
         return score
     if isinstance(observation, dict):
         ps = observation.get("partial_score")
-        if ps is not None:
+        if ps is not None and 0.0 < float(ps) < 1.0:
             return float(ps)
     elif hasattr(observation, "partial_score"):
-        return float(observation.partial_score)
+        ps = float(observation.partial_score)
+        if 0.0 < ps < 1.0:
+            return ps
     return _score_from_seed(task_name)
 
 
