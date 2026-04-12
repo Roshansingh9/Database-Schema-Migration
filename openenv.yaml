@@ -1,77 +1,18 @@
 spec_version: 1
 name: schema-migration-openenv
 type: environment
-version: "1.0.0"
-description: >
-  A real-world RL environment where AI agents perform database schema migrations
-  against live in-memory SQLite databases. The agent writes SQL, executes it,
-  inspects the resulting schema, verifies data integrity, and submits for a
-  deterministic score. Grading is execution-based — the database either contains
-  the correct data or it does not.
-
-tags:
-  - openenv
-  - database
-  - sql
-  - schema-migration
-  - data-engineering
-  - real-world
-
-author: Roshan Kumar Singh
-license: MIT
-
 runtime:
   type: docker
   dockerfile: Dockerfile
-
 app:
   port: 7860
-  health_check: /health
-
 tasks:
-  - id: "add_columns"
-    name: "Add Columns Migration"
-    grader: "graders.schema_graders:AddColumnsGrader"
-    difficulty: "easy"
-    max_steps: 15
-    success_threshold: 0.7
-    description: >
-      Add three new columns (stock_quantity, category, created_at) to the products
-      table with correct types, constraints, and default values. All 5 existing
-      rows must be preserved.
-
-  - id: "normalize_orders"
-    name: "Normalize Orders Schema"
-    grader: "graders.schema_graders:NormalizeOrdersGrader"
-    difficulty: "medium"
-    max_steps: 25
-    success_threshold: 0.6
-    description: >
-      Normalize a denormalized orders table into three properly related tables:
-      customers, products, and orders. All 7 order records must be preserved.
-      Foreign key constraints must hold with zero violations.
-
-  - id: "refactor_employees"
-    name: "Refactor Employees Table"
-    grader: "graders.schema_graders:RefactorEmployeesGrader"
-    difficulty: "hard"
-    max_steps: 35
-    success_threshold: 0.5
-    description: >
-      Refactor a legacy employee_records table into a normalized 3-table schema
-      (departments, job_titles, employees) and create a compatibility VIEW named
-      employee_records so that 6 test queries return identical results. The
-      migration must preserve all 10 employees and pass FK integrity checks.
-
-inference:
-  script: inference.py
-  optional_env_vars:
-    - GROQ_API_KEY
-    - OPENROUTER_API_KEY
-    - HF_TOKEN
-    - API_BASE_URL
-    - MODEL_NAME
-    - TASK_NAME
-    - ENV_BASE_URL
-    - RUN_ALL_TASKS
-  max_runtime_minutes: 18
+  - name: add_columns
+    difficulty: easy
+    grader: graders.schema_graders:AddColumnsGrader
+  - name: normalize_orders
+    difficulty: medium
+    grader: graders.schema_graders:NormalizeOrdersGrader
+  - name: refactor_employees
+    difficulty: hard
+    grader: graders.schema_graders:RefactorEmployeesGrader

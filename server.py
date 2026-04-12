@@ -1,15 +1,8 @@
 """
-FastAPI server exposing the SchemaMigrationEnv via HTTP.
+Compatibility FastAPI server that delegates to the legacy runtime.
 
-Endpoints (OpenEnv spec):
-  POST /reset          → MigrationObservation
-  POST /step           → {observation, reward, done, info}
-  GET  /state          → current state dict
-  GET  /tasks          → list of available tasks
-  POST /grade          → {score, notes}  (run grader without ending episode)
-  GET  /health         → {"status": "ok"}
-
-Query param:  ?task=<task_name>  (used with /reset)
+The official validator should use server/app.py, but keeping this file aligned
+avoids broken imports for older local workflows.
 """
 
 from __future__ import annotations
@@ -17,35 +10,14 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from env.environment import SchemaMigrationEnv
-from env.models import MigrationAction
+from env.legacy_environment import SchemaMigrationEnv
+from env.legacy_models import MigrationAction
+from tasks.task_definitions import TASKS
 
-# ---------------------------------------------------------------------------
-# App setup
-# ---------------------------------------------------------------------------
-
-app = FastAPI(
-    title="Schema Migration OpenEnv",
-    description=(
-        "An OpenEnv-compatible RL environment where AI agents perform real "
-        "database schema migrations against live SQLite databases. "
-        "Graded by actually executing SQL and verifying database state."
-    ),
-    version="1.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Global environment instance (stateful per-process — fine for single-worker HF Space)
+app = FastAPI(title="schema-migration-openenv", version="1.0.0")
 _env: Optional[SchemaMigrationEnv] = None
 
 
@@ -56,10 +28,6 @@ def _get_env() -> SchemaMigrationEnv:
     return _env
 
 
-# ---------------------------------------------------------------------------
-# Request/Response schemas
-# ---------------------------------------------------------------------------
-
 class ResetRequest(BaseModel):
     task: Optional[str] = "add_columns"
 
@@ -69,180 +37,44 @@ class StepRequest(BaseModel):
     sql: Optional[str] = None
 
 
-class StepResponse(BaseModel):
-    observation: Dict[str, Any]
-    reward: float
-    done: bool
-    info: Dict[str, Any]
-
-
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
-
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    return {"status": "healthy", "env": "schema-migration-openenv", "version": "1.0.0"}
-
-
-@app.get("/metadata")
-def metadata() -> Dict[str, Any]:
-    return {
-        "name": "schema-migration-openenv",
-        "description": (
-            "An OpenEnv-compatible RL environment where AI agents perform real "
-            "database schema migrations against live SQLite databases. "
-            "Graded by actually executing SQL and verifying database state."
-        ),
-        "version": "1.0.0",
-        "author": "Roshan Kumar Singh",
-    }
-
-
-@app.get("/schema")
-def schema_endpoint() -> Dict[str, Any]:
-    return {
-        "action": {
-            "type": "object",
-            "properties": {
-                "action_type": {
-                    "type": "string",
-                    "enum": ["write_migration", "execute", "rollback",
-                             "inspect_schema", "run_query", "submit"],
-                },
-                "sql": {"type": "string", "description": "SQL payload (optional)"},
-            },
-            "required": ["action_type"],
-        },
-        "observation": {
-            "type": "object",
-            "properties": {
-                "current_schema": {"type": "array"},
-                "migration_spec": {"type": "string"},
-                "requirements": {"type": "array"},
-                "migration_buffer": {"type": "string"},
-                "execution_history": {"type": "array"},
-                "last_result": {"type": "object"},
-                "step": {"type": "integer"},
-                "max_steps": {"type": "integer"},
-                "partial_score": {"type": "number"},
-                "hint": {"type": "string"},
-            },
-        },
-        "state": {
-            "type": "object",
-            "properties": {
-                "env_name": {"type": "string"},
-                "version": {"type": "string"},
-                "task": {"type": "string"},
-                "difficulty": {"type": "string"},
-                "step": {"type": "integer"},
-                "max_steps": {"type": "integer"},
-                "done": {"type": "boolean"},
-                "cumulative_reward": {"type": "number"},
-            },
-        },
-    }
-
-
-@app.post("/mcp")
-async def mcp(request: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Minimal JSON-RPC 2.0 endpoint for MCP compatibility."""
-    req = request or {}
-    return {
-        "jsonrpc": "2.0",
-        "id": req.get("id"),
-        "result": {
-            "tools": [
-                {
-                    "name": "reset",
-                    "description": "Reset the environment with a given task",
-                },
-                {
-                    "name": "step",
-                    "description": "Execute one action in the environment",
-                },
-                {
-                    "name": "grade",
-                    "description": "Get the current grader score without ending the episode",
-                },
-            ]
-        },
-    }
-
-
-@app.get("/tasks")
-def list_tasks() -> Dict[str, Any]:
-    from tasks.task_definitions import TASKS
-    return {
-        "tasks": [
-            {
-                "name": t.name,
-                "difficulty": t.difficulty,
-                "description": t.description,
-                "max_steps": t.max_steps,
-                "requirements": t.requirements,
-            }
-            for t in TASKS.values()
-        ]
-    }
+    return {"status": "healthy"}
 
 
 @app.post("/reset")
 def reset(request: Optional[ResetRequest] = None) -> Dict[str, Any]:
-    """
-    Reset the environment with the given task (default: add_columns).
-    Returns the initial observation.
-    """
     global _env
     task_name = (request.task if request else None) or "add_columns"
-    from tasks.task_definitions import TASKS
     if task_name not in TASKS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown task '{task_name}'. Available: {list(TASKS.keys())}",
-        )
+        raise HTTPException(status_code=400, detail=f"Unknown task '{task_name}'")
     _env = SchemaMigrationEnv(task_name=task_name)
-    obs = _env.reset()
-    return obs.model_dump()
+    return _env.reset().model_dump()
 
 
 @app.post("/step")
-def step(request: StepRequest) -> StepResponse:
-    """Execute one action and return the resulting observation, reward, done, info."""
+def step(request: StepRequest) -> Dict[str, Any]:
     env = _get_env()
-    action = MigrationAction(action_type=request.action_type, sql=request.sql)
-    try:
-        obs, reward, done, info = env.step(action)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    return StepResponse(
-        observation=obs.model_dump(),
-        reward=reward.value,
-        done=done,
-        info={**info, "reward_message": reward.message},
-    )
+    obs, reward, done, info = env.step(MigrationAction(action_type=request.action_type, sql=request.sql))
+    return {
+        "observation": obs.model_dump(),
+        "reward": reward.value,
+        "done": done,
+        "info": info,
+    }
 
 
 @app.get("/state")
 def state() -> Dict[str, Any]:
-    """Return the current internal environment state."""
     return _get_env().state()
 
 
-@app.post("/grade")
-def grade() -> Dict[str, Any]:
-    """Run the grader against the current DB state without ending the episode."""
-    env = _get_env()
-    score, notes = env.grade()
-    return {"score": score, "notes": notes}
-
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
+def main() -> None:
     import uvicorn
+
     port = int(os.getenv("PORT", "7860"))
     uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
+
+
+if __name__ == "__main__":
+    main()

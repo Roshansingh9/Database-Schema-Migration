@@ -61,7 +61,7 @@ else:
     API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
     API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
     MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-TASK_NAME    = os.getenv("TASK_NAME", "add_columns")
+TASK_NAME    = os.getenv("TASK_NAME")
 ENV_BASE_URL = os.getenv("ENV_BASE_URL", "http://localhost:7860")
 BENCHMARK    = "schema-migration-openenv"
 
@@ -377,7 +377,10 @@ def main() -> None:
 
     # Determine which task(s) to run
     run_all = os.getenv("RUN_ALL_TASKS", "").lower() in ("1", "true", "yes")
-    tasks_to_run = list(MAX_STEPS.keys()) if run_all else [TASK_NAME]
+    if TASK_NAME:
+        tasks_to_run = [TASK_NAME]
+    else:
+        tasks_to_run = list(MAX_STEPS.keys()) if (run_all or not TASK_NAME) else ["add_columns"]
 
     scores: Dict[str, float] = {}
     for task in tasks_to_run:

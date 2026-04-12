@@ -1,14 +1,8 @@
 """
-Task definitions for the Schema Migration environment.
+Task definitions and grading helpers for the Schema Migration environment.
 
-Each task is a dataclass containing:
-  - name / difficulty / description
-  - seed_sql   : the starting database state
-  - spec       : natural-language migration specification shown to the agent
-  - requirements : bullet-point checklist shown in the observation
-  - grader     : a callable(db: MigrationDB, pre_snapshot: str) -> float in [0,1]
-  - max_steps  : step budget
-  - test_queries: list of (description, sql, expected_value) tuples used in Hard task
+Each task contains a real SQLite seed schema plus deterministic grading logic
+that validates the migrated database by executing live queries.
 """
 
 from __future__ import annotations
@@ -20,27 +14,117 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from env.database import MigrationDB
 
 
-# ---------------------------------------------------------------------------
-# Helper: lightweight scorer
-# ---------------------------------------------------------------------------
+@dataclass
+class Task:
+    name: str
+    difficulty: str
+    description: str
+    seed_sql: str
+    spec: str
+    requirements: List[str]
+    hints: Dict[str, Any]
+    grader: Callable[[MigrationDB, str, Dict[str, Any]], Tuple[float, List[str], Dict[str, float]]]
+    max_steps: int = 20
+    expected_objects: List[str] = field(default_factory=list)
 
-def _score(*components: Tuple[str, float, float]) -> Tuple[float, List[str]]:
-    """
-    components: (label, earned, max)
-    Returns (total_score_0_to_1, notes_list)
-    """
-    total_earned = sum(c[1] for c in components)
-    total_max = sum(c[2] for c in components)
-    score = round(max(0.0, min(1.0, total_earned / total_max if total_max > 0 else 0.0)), 4)
-    notes = [f"{c[0]}: {c[1]:.2f}/{c[2]:.2f}" for c in components]
+
+def build_seed_metrics(pre_snapshot: str) -> Dict[str, Any]:
+    db = MigrationDB()
+    db.init(pre_snapshot)
+    metrics = {
+        "tables": db.get_tables(),
+        "table_metrics": db.snapshot_table_metrics(),
+        "schema": {table.name: table for table in db.get_schema()},
+    }
+    db.close()
+    return metrics
+
+
+def _normalize_score(value: float) -> float:
+    return round(max(0.0, min(1.0, value)), 4)
+
+
+def _strict_openenv_score(raw: float) -> float:
+    score = round(0.05 + max(0.0, min(1.0, raw)) * 0.90, 4)
+    return max(0.05, min(0.95, score))
+
+
+def _finalize_breakdown(
+    syntax_score: float,
+    execution_score: float,
+    correctness_score: float,
+    integrity_score: float,
+    efficiency_penalty: float,
+    notes: List[str],
+) -> Tuple[float, List[str], Dict[str, float]]:
+    raw_total = _normalize_score(
+        0.20 * syntax_score
+        + 0.20 * execution_score
+        + 0.35 * correctness_score
+        + 0.25 * integrity_score
+        - efficiency_penalty
+    )
+    total = _strict_openenv_score(raw_total)
+    breakdown = {
+        "syntax_score": _normalize_score(syntax_score),
+        "execution_score": _normalize_score(execution_score),
+        "correctness_score": _normalize_score(correctness_score),
+        "integrity_score": _normalize_score(integrity_score),
+        "efficiency_penalty": _normalize_score(efficiency_penalty),
+        "total": total,
+    }
+    return total, notes, breakdown
+
+
+def _legacy_integrity_score(db: MigrationDB, seed_metrics: Dict[str, Any], protected_tables: List[str]) -> Tuple[float, List[str]]:
+    notes: List[str] = []
+    checks = 0
+    passed = 0
+    for table in protected_tables:
+        checks += 1
+        before = seed_metrics["table_metrics"].get(table)
+        after_row_count = db.get_row_count(table)
+        if before and after_row_count == before["row_count"]:
+            passed += 1
+            notes.append(f"row count preserved for {table}")
+        else:
+            notes.append(f"row count mismatch for {table}: expected {before['row_count'] if before else 'missing'}, got {after_row_count}")
+
+        checks += 1
+        after_checksum = db.get_checksum(table)
+        if before and after_checksum == before["checksum"]:
+            passed += 1
+            notes.append(f"checksum preserved for {table}")
+        else:
+            notes.append(f"checksum mismatch for {table}")
+    return (passed / checks if checks else 1.0), notes
+
+
+def _redundant_column_penalty(db: MigrationDB, table: str, banned_columns: List[str]) -> float:
+    if not db.table_exists(table):
+        return 0.0
+    schema = {s.name: s for s in db.get_schema()}
+    current = schema.get(table)
+    if current is None:
+        return 0.0
+    present = sum(1 for col in banned_columns if any(c.name == col for c in current.columns))
+    return min(0.2, 0.05 * present)
+
+
+def _object_score(db: MigrationDB, expected_objects: List[str]) -> Tuple[float, List[str]]:
+    diff = db.schema_diff(expected_objects)
+    notes = [f"missing objects: {diff['missing']}" if diff["missing"] else "no expected objects missing"]
+    if diff["unexpected"]:
+        notes.append(f"unexpected objects: {diff['unexpected']}")
+    total = len(expected_objects) + max(len(diff["unexpected"]), 0)
+    if total == 0:
+        return 1.0, notes
+    score = max(0.0, 1.0 - (len(diff["missing"]) + 0.25 * len(diff["unexpected"])) / total)
     return score, notes
 
 
-# ===========================================================================
-# TASK 1 — EASY: Add columns to an existing table
-# ===========================================================================
-
-_EASY_SEED = textwrap.dedent("""
+_EASY_SEED = textwrap.dedent(
+    """
     CREATE TABLE products (
         id      INTEGER PRIMARY KEY AUTOINCREMENT,
         name    TEXT    NOT NULL,
@@ -53,100 +137,96 @@ _EASY_SEED = textwrap.dedent("""
         ('Keyboard',  79.99),
         ('Monitor',  349.99),
         ('Headset',   89.99);
-""").strip()
+    """
+).strip()
 
-_EASY_SPEC = textwrap.dedent("""
-    The e-commerce team needs three new fields on the `products` table:
+_EASY_SPEC = textwrap.dedent(
+    """
+    The e-commerce team needs three new fields on the products table.
 
-    1. `stock_quantity`  — INTEGER, NOT NULL, DEFAULT 0
-       Tracks how many units are in stock.
+    Add:
+    - stock_quantity INTEGER NOT NULL DEFAULT 0
+    - category TEXT NULL
+    - created_at TEXT NOT NULL DEFAULT '2024-01-01'
 
-    2. `category`        — TEXT, nullable (NULL is allowed)
-       Product category string (e.g. 'Electronics', 'Accessories').
-
-    3. `created_at`      — TEXT, NOT NULL, DEFAULT '2024-01-01'
-       ISO-8601 date string recording when the product was added.
-
-    All existing rows must survive the migration with their original data intact.
-    The new columns should appear alongside the existing ones.
-""").strip()
+    Preserve all existing rows and keep the original id, name, and price data unchanged.
+    """
+).strip()
 
 _EASY_REQS = [
-    "Add column: stock_quantity INTEGER NOT NULL DEFAULT 0",
-    "Add column: category TEXT (nullable)",
-    "Add column: created_at TEXT NOT NULL DEFAULT '2024-01-01'",
-    "Preserve all 5 existing product rows",
-    "Existing columns (id, name, price) must be unchanged",
+    "Add stock_quantity INTEGER NOT NULL DEFAULT 0 to products",
+    "Add category TEXT nullable to products",
+    "Add created_at TEXT NOT NULL DEFAULT '2024-01-01' to products",
+    "Preserve all 5 existing product rows without changing id/name/price values",
+    "Do not add unrelated columns",
 ]
 
 
-def _grade_easy(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
+def _grade_easy(db: MigrationDB, pre_snapshot: str, seed_metrics: Dict[str, Any]) -> Tuple[float, List[str], Dict[str, float]]:
     notes: List[str] = []
-    earned = 0.0
+    syntax_score = 1.0
+    execution_score = 1.0 if db.table_exists("products") else 0.0
 
-    # 1. Table still exists
-    if not db.table_exists("products"):
-        return 0.001, ["FAIL: products table missing"]
-
-    # 2. Row count preserved
-    rc = db.get_row_count("products")
-    if rc == 5:
-        earned += 1.5
-        notes.append("row_count: 1.5/1.5 (5 rows intact)")
-    else:
-        notes.append(f"row_count: 0/1.5 ({rc} rows, expected 5)")
-
-    # 3. New columns exist with correct types / constraints
-    col_checks = [
-        ("stock_quantity", "INTEGER", False),   # (name, type_contains, nullable)
-        ("category",       "TEXT",    True),
-        ("created_at",     "TEXT",    False),
-    ]
-    for cname, ctype, nullable in col_checks:
-        if db.column_exists("products", cname):
-            # Just check existence — type enforcement is best-effort in SQLite
-            earned += 1.0
-            notes.append(f"{cname}: 1.0/1.0 (present)")
-        else:
-            notes.append(f"{cname}: 0/1.0 (missing)")
-
-    # 4. Original columns intact
-    schema_tables = {t.name: t for t in db.get_schema()}
-    if "products" in schema_tables:
-        existing_names = {c.name for c in schema_tables["products"].columns}
-        for col in ("id", "name", "price"):
-            if col in existing_names:
-                earned += 0.5
-                notes.append(f"original {col}: 0.5/0.5 (intact)")
+    schema = {table.name: table for table in db.get_schema()}
+    products = schema.get("products")
+    correctness = 0.0
+    if products:
+        expected = {
+            "stock_quantity": ("INTEGER", False),
+            "category": ("TEXT", True),
+            "created_at": ("TEXT", False),
+        }
+        present = 0
+        for name, (col_type, nullable) in expected.items():
+            column = next((c for c in products.columns if c.name == name), None)
+            if column and col_type in column.type.upper() and column.nullable == nullable:
+                present += 1
+                notes.append(f"column {name} present with expected shape")
+            elif column:
+                notes.append(f"column {name} present but constraints differ")
             else:
-                notes.append(f"original {col}: 0/0.5 (MISSING)")
+                notes.append(f"column {name} missing")
+        correctness += present / len(expected)
 
-    # 5. Default values — check stock_quantity and created_at for existing rows
-    result = db.run_query("SELECT stock_quantity, created_at FROM products LIMIT 1")
-    if result.success and result.query_result:
-        row = result.query_result[0]
-        if row.get("stock_quantity") == 0:
-            earned += 0.5
-            notes.append("default stock_quantity=0: 0.5/0.5")
-        else:
-            notes.append(f"default stock_quantity: 0/0.5 (got {row.get('stock_quantity')})")
-        if row.get("created_at") == "2024-01-01":
-            earned += 0.5
-            notes.append("default created_at='2024-01-01': 0.5/0.5")
-        else:
-            notes.append(f"default created_at: 0/0.5 (got {row.get('created_at')})")
+        original_query = db.compare_query_results(
+            "SELECT id, name, price FROM products ORDER BY id",
+            "SELECT id, name, price FROM products ORDER BY id",
+        )
+        if original_query["match"]:
+            correctness += 0.25
+            notes.append("original columns remain queryable")
 
-    total_max = 1.5 + 3 * 1.0 + 3 * 0.5 + 0.5 + 0.5  # = 7.5
-    score = round(max(0.001, min(0.999, earned / total_max)), 4)
-    return score, notes
+        default_check = db.run_query(
+            "SELECT MIN(stock_quantity) AS min_stock, MAX(stock_quantity) AS max_stock, "
+            "MIN(created_at) AS min_created, MAX(created_at) AS max_created FROM products"
+        )
+        if default_check.success and default_check.query_result:
+            row = default_check.query_result[0]
+            if row.get("min_stock") == 0 and row.get("max_stock") == 0:
+                correctness += 0.1
+                notes.append("stock_quantity defaults preserved on existing rows")
+            if row.get("min_created") == "2024-01-01" and row.get("max_created") == "2024-01-01":
+                correctness += 0.1
+                notes.append("created_at defaults preserved on existing rows")
+
+    integrity_score, integrity_notes = _legacy_integrity_score(db, seed_metrics, ["products"])
+    notes.extend(integrity_notes)
+    efficiency_penalty = _redundant_column_penalty(db, "products", ["stock", "product_category", "created_on"])
+    if efficiency_penalty:
+        notes.append("redundant columns detected on products")
+    correctness = min(1.0, correctness)
+    return _finalize_breakdown(
+        syntax_score=syntax_score,
+        execution_score=execution_score,
+        correctness_score=correctness,
+        integrity_score=integrity_score,
+        efficiency_penalty=efficiency_penalty,
+        notes=notes,
+    )
 
 
-# ===========================================================================
-# TASK 2 — MEDIUM: Normalize a denormalized table (1NF → 3NF)
-# ===========================================================================
-
-_MEDIUM_SEED = textwrap.dedent("""
-    -- Denormalized orders table: customer data repeated in every row
+_MEDIUM_SEED = textwrap.dedent(
+    """
     CREATE TABLE orders (
         order_id        INTEGER PRIMARY KEY AUTOINCREMENT,
         customer_name   TEXT    NOT NULL,
@@ -166,128 +246,114 @@ _MEDIUM_SEED = textwrap.dedent("""
         (5,'Carol White','carol@example.com','Bangalore','Headset',   89.99,3,'2024-01-16'),
         (6,'Bob Jones',  'bob@example.com',  'Delhi',    'Laptop',   999.99,1,'2024-01-17'),
         (7,'Carol White','carol@example.com','Bangalore','Mouse',     29.99,1,'2024-01-18');
-""").strip()
+    """
+).strip()
 
-_MEDIUM_SPEC = textwrap.dedent("""
-    The orders table is denormalized — customer data is repeated for every order.
-    Normalize the database into three tables:
+_MEDIUM_SPEC = textwrap.dedent(
+    """
+    Normalize the legacy orders table into customers, products, and a new normalized orders table.
 
-    1. `customers` table
-       - customer_id  INTEGER PRIMARY KEY AUTOINCREMENT
-       - name         TEXT NOT NULL
-       - email        TEXT NOT NULL UNIQUE
-       - city         TEXT
+    Required target schema:
+    - customers(customer_id PK, name, email UNIQUE, city)
+    - products(product_id PK, name UNIQUE, price)
+    - orders(order_id PK, customer_id FK, product_id FK, quantity, order_date)
 
-    2. `products` table
-       - product_id   INTEGER PRIMARY KEY AUTOINCREMENT
-       - name         TEXT NOT NULL UNIQUE
-       - price        REAL NOT NULL
-
-    3. `orders` table (replace the existing one)
-       - order_id     INTEGER PRIMARY KEY AUTOINCREMENT
-       - customer_id  INTEGER NOT NULL REFERENCES customers(customer_id)
-       - product_id   INTEGER NOT NULL REFERENCES products(product_id)
-       - quantity     INTEGER NOT NULL DEFAULT 1
-       - order_date   TEXT NOT NULL
-
-    ALL 7 original order records must be preserved (no data loss).
-    Unique customers: Alice Smith, Bob Jones, Carol White (3 rows in customers).
-    Unique products: Laptop, Mouse, Keyboard, Monitor, Headset (5 rows in products).
-    The old denormalized `orders` table must be replaced by the normalized version.
-""").strip()
+    Preserve all 7 original orders, deduplicate customers and products, and ensure foreign keys are valid.
+    """
+).strip()
 
 _MEDIUM_REQS = [
-    "Create customers table with correct schema + 3 rows",
-    "Create products table with correct schema + 5 rows",
-    "Replace orders table with normalized version (FKs to customers + products)",
-    "Preserve all 7 order records",
-    "FK constraints must hold (no orphaned references)",
-    "No duplicate customers or products",
+    "Create customers with 3 unique rows",
+    "Create products with 5 unique rows",
+    "Replace the denormalized orders table with a normalized one using foreign keys",
+    "Preserve all 7 order records and their quantities and dates",
+    "Do not keep denormalized customer_* or product_* columns in the final orders table",
 ]
 
 
-def _grade_medium(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
+def _grade_medium(db: MigrationDB, pre_snapshot: str, seed_metrics: Dict[str, Any]) -> Tuple[float, List[str], Dict[str, float]]:
     notes: List[str] = []
-    earned = 0.0
+    object_score, object_notes = _object_score(db, ["customers", "products", "orders"])
+    notes.extend(object_notes)
+    execution_score = object_score
 
-    # 1. All three tables exist
-    for tname in ("customers", "products", "orders"):
-        if db.table_exists(tname):
-            earned += 0.5
-            notes.append(f"table {tname}: 0.5/0.5")
-        else:
-            notes.append(f"table {tname}: 0/0.5 MISSING")
-
-    # 2. Customer count
-    nc = db.get_row_count("customers")
-    if nc == 3:
-        earned += 1.5
-        notes.append("customers rows: 1.5/1.5")
-    elif nc is not None and nc > 0:
-        earned += 0.5
-        notes.append(f"customers rows: 0.5/1.5 (got {nc}, expected 3)")
+    correctness = 0.0
+    if db.get_row_count("customers") == 3:
+        correctness += 0.2
+        notes.append("customers row count correct")
     else:
-        notes.append(f"customers rows: 0/1.5 (got {nc})")
+        notes.append(f"customers row count incorrect: {db.get_row_count('customers')}")
 
-    # 3. Product count
-    np_ = db.get_row_count("products")
-    if np_ == 5:
-        earned += 1.5
-        notes.append("products rows: 1.5/1.5")
-    elif np_ is not None and np_ > 0:
-        earned += 0.5
-        notes.append(f"products rows: 0.5/1.5 (got {np_}, expected 5)")
+    if db.get_row_count("products") == 5:
+        correctness += 0.2
+        notes.append("products row count correct")
     else:
-        notes.append(f"products rows: 0/1.5 (got {np_})")
+        notes.append(f"products row count incorrect: {db.get_row_count('products')}")
 
-    # 4. Order count preserved
-    no = db.get_row_count("orders")
-    if no == 7:
-        earned += 2.0
-        notes.append("orders rows: 2.0/2.0 (7 rows preserved)")
-    elif no is not None and no > 0:
-        earned += 0.5
-        notes.append(f"orders rows: 0.5/2.0 (got {no}, expected 7)")
+    if db.get_row_count("orders") == 7:
+        correctness += 0.2
+        notes.append("orders row count correct")
     else:
-        notes.append(f"orders rows: 0/2.0 (got {no})")
+        notes.append(f"orders row count incorrect: {db.get_row_count('orders')}")
 
-    # 5. FK columns exist in orders
-    for fk_col in ("customer_id", "product_id"):
-        if db.column_exists("orders", fk_col):
-            earned += 0.5
-            notes.append(f"orders.{fk_col}: 0.5/0.5")
-        else:
-            notes.append(f"orders.{fk_col}: 0/0.5 MISSING")
+    email_uniqueness = db.query_scalar("SELECT COUNT(*) = COUNT(DISTINCT email) FROM customers")
+    if email_uniqueness == 1:
+        correctness += 0.1
+        notes.append("customers.email is effectively unique")
 
-    # 6. FK integrity — no orphaned references
-    violations = db.fk_violations()
-    if violations == 0:
-        earned += 1.5
-        notes.append("FK integrity: 1.5/1.5 (no violations)")
+    order_projection = db.run_query(
+        """
+        SELECT c.name AS customer_name, c.email AS customer_email, c.city AS customer_city,
+               p.name AS product_name, p.price AS product_price, o.quantity, o.order_date
+        FROM orders o
+        JOIN customers c ON c.customer_id = o.customer_id
+        JOIN products p ON p.product_id = o.product_id
+        ORDER BY o.order_id
+        """
+    )
+    seed_db = MigrationDB()
+    seed_db.init(pre_snapshot)
+    original_projection = seed_db.run_query(
+        """
+        SELECT customer_name, customer_email, customer_city, product_name, product_price, quantity, order_date
+        FROM orders ORDER BY order_id
+        """
+    )
+    seed_db.close()
+    if order_projection.success and original_projection.success and order_projection.query_result == original_projection.query_result:
+        correctness += 0.3
+        notes.append("normalized join reproduces the original order data exactly")
     else:
-        notes.append(f"FK integrity: 0/1.5 ({violations} violation(s))")
+        notes.append("normalized join does not match the original order data")
 
-    # 7. No duplicate emails in customers
-    result = db.run_query("SELECT COUNT(*) as cnt FROM customers")
-    uniq = db.run_query("SELECT COUNT(DISTINCT email) as cnt FROM customers")
-    if (result.success and uniq.success and result.query_result and uniq.query_result
-            and result.query_result[0]["cnt"] == uniq.query_result[0]["cnt"]):
-        earned += 0.5
-        notes.append("no duplicate customers: 0.5/0.5")
+    integrity = 1.0
+    fk_violations = db.fk_violations()
+    if fk_violations != 0:
+        integrity -= 0.4
+        notes.append(f"foreign key violations detected: {fk_violations}")
     else:
-        notes.append("no duplicate customers: 0/0.5")
+        notes.append("foreign key integrity check passed")
 
-    total_max = 1.5 + 1.5 + 1.5 + 2.0 + 1.0 + 1.5 + 0.5  # = 9.5
-    score = round(max(0.001, min(0.999, earned / total_max)), 4)
-    return score, notes
+    orders_schema = {s.name: s for s in db.get_schema()}.get("orders")
+    banned_columns = ["customer_name", "customer_email", "customer_city", "product_name", "product_price"]
+    efficiency_penalty = _redundant_column_penalty(db, "orders", banned_columns)
+    if orders_schema:
+        fk_cols = {c.name for c in orders_schema.columns if c.foreign_key}
+        if {"customer_id", "product_id"}.issubset(fk_cols):
+            integrity = min(1.0, integrity + 0.1)
+            notes.append("orders foreign key columns are present")
+    return _finalize_breakdown(
+        syntax_score=1.0,
+        execution_score=execution_score,
+        correctness_score=min(1.0, correctness),
+        integrity_score=min(1.0, integrity),
+        efficiency_penalty=efficiency_penalty,
+        notes=notes,
+    )
 
 
-# ===========================================================================
-# TASK 3 — HARD: Multi-table refactor with compatibility view
-# ===========================================================================
-
-_HARD_SEED = textwrap.dedent("""
-    -- Legacy monolithic schema used by an internal analytics system
+_HARD_SEED = textwrap.dedent(
+    """
     CREATE TABLE employee_records (
         emp_id          INTEGER PRIMARY KEY AUTOINCREMENT,
         full_name       TEXT    NOT NULL,
@@ -311,209 +377,168 @@ _HARD_SEED = textwrap.dedent("""
         (8,'Arjun Reddy',   'arjun@corp.com',  'Design',     'UI Designer',        85000,'kiran@corp.com','2022-08-19',0),
         (9,'Lakshmi Rao',   'lakshmi@corp.com','HR',         'HR Analyst',         75000,'suresh@corp.com','2023-05-01',1),
        (10,'Vikram Singh',  'vikram@corp.com', 'Engineering','Senior Engineer',   118000,'ravi@corp.com', '2020-12-10',1);
-""").strip()
+    """
+).strip()
 
-_HARD_SPEC = textwrap.dedent("""
-    Refactor the legacy `employee_records` table into a proper normalized schema:
+_HARD_SPEC = textwrap.dedent(
+    """
+    Refactor employee_records into normalized departments, job_titles, and employees tables.
 
-    NEW TABLES REQUIRED:
-    ─────────────────────
-    1. `departments`
-       - dept_id    INTEGER PRIMARY KEY AUTOINCREMENT
-       - name       TEXT NOT NULL UNIQUE
+    Final required objects:
+    - departments(dept_id PK, name UNIQUE)
+    - job_titles(title_id PK, title UNIQUE)
+    - employees(emp_id PK, full_name, email UNIQUE, dept_id FK, title_id FK, salary, manager_id FK, hire_date, is_active)
+    - employee_records VIEW exposing: emp_id, full_name, email, department, job_title, salary, manager_email, hire_date, is_active
 
-    2. `job_titles`
-       - title_id   INTEGER PRIMARY KEY AUTOINCREMENT
-       - title      TEXT NOT NULL UNIQUE
-
-    3. `employees`
-       - emp_id     INTEGER PRIMARY KEY AUTOINCREMENT
-       - full_name  TEXT NOT NULL
-       - email      TEXT NOT NULL UNIQUE
-       - dept_id    INTEGER NOT NULL REFERENCES departments(dept_id)
-       - title_id   INTEGER NOT NULL REFERENCES job_titles(title_id)
-       - salary     REAL NOT NULL
-       - manager_id INTEGER REFERENCES employees(emp_id)   -- self-referential FK
-       - hire_date  TEXT NOT NULL
-       - is_active  INTEGER NOT NULL DEFAULT 1
-
-    COMPATIBILITY VIEW (CRITICAL):
-    ───────────────────────────────
-    Create a VIEW named `employee_records` (same name as the old table) that
-    reproduces the EXACT columns the old table had, so existing application
-    queries continue to work unchanged:
-
-        emp_id, full_name, email, department, job_title, salary,
-        manager_email, hire_date, is_active
-
-    VERIFICATION:
-    ─────────────
-    These test queries must return the same results as before:
-    Q1: SELECT COUNT(*) FROM employee_records           → must return 10
-    Q2: SELECT COUNT(*) FROM employee_records WHERE is_active=1  → must return 9
-    Q3: SELECT department FROM employee_records WHERE email='priya@corp.com'  → 'Engineering'
-    Q4: SELECT salary FROM employee_records WHERE email='ravi@corp.com'  → 150000.0
-    Q5: SELECT COUNT(DISTINCT department) FROM employee_records  → 4
-    Q6: SELECT COUNT(*) FROM employees WHERE manager_id IS NULL  → 3 (Ravi, Suresh have no manager; Anjali's manager 'ceo@corp.com' is not in the table)
-
-    ALL 10 original employee records must be preserved.
-    The old `employee_records` TABLE must be replaced by the VIEW.
-""").strip()
+    The compatibility view must preserve the results of legacy read queries.
+    """
+).strip()
 
 _HARD_REQS = [
-    "Create departments table (4 unique departments as rows)",
-    "Create job_titles table (9 unique job titles as rows)",
-    "Create employees table with FK to departments, job_titles, self-ref manager_id",
-    "Migrate all 10 employees with correct dept_id, title_id, manager_id",
-    "Drop old employee_records TABLE; create employee_records VIEW with identical columns",
-    "Q1–Q6 test queries all return correct results through the compatibility view",
-    "FK integrity: zero violations",
+    "Create departments with 4 unique rows",
+    "Create job_titles with 9 unique rows",
+    "Create employees with valid department/title/self-manager references",
+    "Replace the old employee_records table with a compatibility view of the same name",
+    "Preserve legacy query behavior through the view",
 ]
 
-# Test queries: (description, sql, expected_scalar_or_list)
-_HARD_TEST_QUERIES: List[Tuple[str, str, Any]] = [
-    ("total row count via view",        "SELECT COUNT(*) FROM employee_records", 10),
-    ("active employees via view",       "SELECT COUNT(*) FROM employee_records WHERE is_active=1", 9),
-    ("department lookup via view",      "SELECT department FROM employee_records WHERE email='priya@corp.com'", "Engineering"),
-    ("salary lookup via view",          "SELECT salary FROM employee_records WHERE email='ravi@corp.com'", 150000.0),
-    ("distinct departments via view",   "SELECT COUNT(DISTINCT department) FROM employee_records", 4),
-    ("employees with no manager",       "SELECT COUNT(*) FROM employees WHERE manager_id IS NULL", 3),
+_HARD_COMPAT_QUERIES: List[Tuple[str, str, Any]] = [
+    ("total row count", "SELECT COUNT(*) FROM employee_records", 10),
+    ("active employees", "SELECT COUNT(*) FROM employee_records WHERE is_active=1", 9),
+    ("priya department", "SELECT department FROM employee_records WHERE email='priya@corp.com'", "Engineering"),
+    ("ravi salary", "SELECT salary FROM employee_records WHERE email='ravi@corp.com'", 150000.0),
+    ("distinct departments", "SELECT COUNT(DISTINCT department) FROM employee_records", 4),
+    ("employees with no manager", "SELECT COUNT(*) FROM employees WHERE manager_id IS NULL", 3),
 ]
 
 
-def _grade_hard(db: MigrationDB, _pre: str) -> Tuple[float, List[str]]:
+def _grade_hard(db: MigrationDB, pre_snapshot: str, seed_metrics: Dict[str, Any]) -> Tuple[float, List[str], Dict[str, float]]:
     notes: List[str] = []
-    earned = 0.0
+    execution_score, object_notes = _object_score(db, ["departments", "job_titles", "employees", "employee_records"])
+    notes.extend(object_notes)
 
-    # 1. Three new tables exist
-    for tname in ("departments", "job_titles", "employees"):
-        if db.table_exists(tname):
-            earned += 0.5
-            notes.append(f"table {tname}: 0.5/0.5")
+    correctness = 0.0
+    if db.get_row_count("departments") == 4:
+        correctness += 0.1
+        notes.append("departments row count correct")
+    if db.get_row_count("job_titles") == 9:
+        correctness += 0.1
+        notes.append("job_titles row count correct")
+    if db.get_row_count("employees") == 10:
+        correctness += 0.15
+        notes.append("employees row count correct")
+
+    if db.view_exists("employee_records") and not db.table_exists("employee_records"):
+        correctness += 0.15
+        notes.append("employee_records correctly replaced by a compatibility view")
+    else:
+        notes.append("employee_records is not a compatibility view")
+
+    seed_db = MigrationDB()
+    seed_db.init(pre_snapshot)
+    legacy_projection = seed_db.run_query(
+        "SELECT emp_id, full_name, email, department, job_title, salary, manager_email, hire_date, is_active FROM employee_records ORDER BY emp_id"
+    )
+    seed_db.close()
+    current_projection = db.run_query(
+        "SELECT emp_id, full_name, email, department, job_title, salary, manager_email, hire_date, is_active FROM employee_records ORDER BY emp_id"
+    )
+    if legacy_projection.success and current_projection.success and legacy_projection.query_result == current_projection.query_result:
+        correctness += 0.3
+        notes.append("compatibility view reproduces the full legacy result set")
+    else:
+        notes.append("compatibility view does not reproduce the full legacy result set")
+
+    per_query = 0.2 / len(_HARD_COMPAT_QUERIES)
+    for label, sql, expected in _HARD_COMPAT_QUERIES:
+        value = db.query_scalar(sql)
+        if value == expected:
+            correctness += per_query
+            notes.append(f"compatibility query passed: {label}")
         else:
-            notes.append(f"table {tname}: 0/0.5 MISSING")
+            notes.append(f"compatibility query failed: {label} (got {value!r}, expected {expected!r})")
 
-    # 2. Department count
-    nd = db.get_row_count("departments")
-    if nd == 4:
-        earned += 1.0
-        notes.append("departments rows: 1.0/1.0")
-    elif nd is not None and nd > 0:
-        earned += 0.3
-        notes.append(f"departments rows: 0.3/1.0 (got {nd}, expected 4)")
+    integrity = 1.0
+    fk_violations = db.fk_violations()
+    if fk_violations:
+        integrity -= 0.4
+        notes.append(f"foreign key violations detected: {fk_violations}")
     else:
-        notes.append(f"departments rows: 0/1.0 (got {nd})")
+        notes.append("foreign key integrity check passed")
 
-    # 3. Job title count
-    njt = db.get_row_count("job_titles")
-    if njt == 9:
-        earned += 1.0
-        notes.append("job_titles rows: 1.0/1.0")
-    elif njt is not None and njt > 0:
-        earned += 0.3
-        notes.append(f"job_titles rows: 0.3/1.0 (got {njt}, expected 9)")
-    else:
-        notes.append(f"job_titles rows: 0/1.0 (got {njt})")
+    manager_ids = db.run_query(
+        "SELECT COUNT(*) AS cnt FROM employees e LEFT JOIN employees m ON m.emp_id = e.manager_id WHERE e.manager_id IS NOT NULL AND m.emp_id IS NULL"
+    )
+    if manager_ids.success and manager_ids.query_result and manager_ids.query_result[0]["cnt"] == 0:
+        integrity += 0.1
+        notes.append("self-referential manager links are valid")
 
-    # 4. Employee count
-    ne = db.get_row_count("employees")
-    if ne == 10:
-        earned += 1.5
-        notes.append("employees rows: 1.5/1.5")
-    elif ne is not None and ne > 0:
-        earned += 0.5
-        notes.append(f"employees rows: 0.5/1.5 (got {ne})")
-    else:
-        notes.append(f"employees rows: 0/1.5 (got {ne})")
-
-    # 5. FK integrity
-    violations = db.fk_violations()
-    if violations == 0:
-        earned += 1.0
-        notes.append("FK integrity: 1.0/1.0")
-    else:
-        notes.append(f"FK integrity: 0/1.0 ({violations} violation(s))")
-
-    # 6. Test queries through compatibility view (most critical)
-    query_score = 0.0
-    per_query = 2.0 / len(_HARD_TEST_QUERIES)
-    for desc, sql, expected in _HARD_TEST_QUERIES:
-        val = db.query_scalar(sql)
-        if val == expected or (isinstance(expected, float) and abs(float(val or 0) - expected) < 0.01):
-            query_score += per_query
-            notes.append(f"Q '{desc}': PASS")
-        else:
-            notes.append(f"Q '{desc}': FAIL (got {val!r}, expected {expected!r})")
-    earned += query_score
-    notes.append(f"test queries total: {query_score:.2f}/2.0")
-
-    # 7. employee_records is now a VIEW (not a table)
-    assert db._conn
-    obj_type = db._conn.execute(
-        "SELECT type FROM sqlite_master WHERE name='employee_records'"
-    ).fetchone()
-    if obj_type and obj_type[0] == "view":
-        earned += 1.0
-        notes.append("employee_records is a VIEW: 1.0/1.0")
-    elif obj_type and obj_type[0] == "table":
-        notes.append("employee_records is still a TABLE (not converted to view): 0/1.0")
-    else:
-        notes.append("employee_records not found: 0/1.0")
-
-    total_max = 1.5 + 1.0 + 1.0 + 1.5 + 1.0 + 2.0 + 1.0  # = 9.0
-    score = round(max(0.001, min(0.999, earned / total_max)), 4)
-    return score, notes
-
-
-# ===========================================================================
-# Task registry
-# ===========================================================================
-
-@dataclass
-class Task:
-    name: str
-    difficulty: str          # "easy" | "medium" | "hard"
-    description: str
-    seed_sql: str
-    spec: str
-    requirements: List[str]
-    grader: Callable          # (db: MigrationDB, pre_snapshot: str) -> Tuple[float, List[str]]
-    max_steps: int = 20
+    efficiency_penalty = 0.0
+    if db.table_exists("employees"):
+        efficiency_penalty += _redundant_column_penalty(db, "employees", ["department", "job_title", "manager_email"])
+    return _finalize_breakdown(
+        syntax_score=1.0,
+        execution_score=execution_score,
+        correctness_score=min(1.0, correctness),
+        integrity_score=min(1.0, integrity),
+        efficiency_penalty=min(0.3, efficiency_penalty),
+        notes=notes,
+    )
 
 
 TASKS: Dict[str, Task] = {
     "add_columns": Task(
         name="add_columns",
         difficulty="easy",
-        description="Add three new columns to the products table with correct types and defaults.",
+        description="Add three new columns to products while preserving all data.",
         seed_sql=_EASY_SEED,
         spec=_EASY_SPEC,
         requirements=_EASY_REQS,
+        hints={
+            "legacy_tables": ["products"],
+            "target_objects": ["products"],
+            "validation_queries": ["SELECT id, name, price, stock_quantity, category, created_at FROM products ORDER BY id"],
+        },
         grader=_grade_easy,
         max_steps=15,
+        expected_objects=["products"],
     ),
     "normalize_orders": Task(
         name="normalize_orders",
         difficulty="medium",
-        description="Normalize a denormalized orders table into customers, products, and orders tables.",
+        description="Normalize orders into customers, products, and foreign-key-backed orders.",
         seed_sql=_MEDIUM_SEED,
         spec=_MEDIUM_SPEC,
         requirements=_MEDIUM_REQS,
+        hints={
+            "legacy_tables": ["orders"],
+            "target_objects": ["customers", "products", "orders"],
+            "validation_queries": [
+                "SELECT COUNT(*) FROM customers",
+                "SELECT COUNT(*) FROM products",
+                "SELECT COUNT(*) FROM orders",
+            ],
+        },
         grader=_grade_medium,
         max_steps=25,
+        expected_objects=["customers", "products", "orders"],
     ),
     "refactor_employees": Task(
         name="refactor_employees",
         difficulty="hard",
-        description=(
-            "Refactor a legacy employee_records table into a normalized schema "
-            "and create a compatibility view so existing queries keep working."
-        ),
+        description="Refactor employee_records into normalized tables plus a compatibility view.",
         seed_sql=_HARD_SEED,
         spec=_HARD_SPEC,
         requirements=_HARD_REQS,
+        hints={
+            "legacy_tables": ["employee_records"],
+            "target_objects": ["departments", "job_titles", "employees", "employee_records"],
+            "validation_queries": [query for _, query, _ in _HARD_COMPAT_QUERIES],
+        },
         grader=_grade_hard,
         max_steps=35,
+        expected_objects=["departments", "job_titles", "employees", "employee_records"],
     ),
 }
+
 

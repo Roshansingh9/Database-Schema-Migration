@@ -1,20 +1,5 @@
 """
-FastAPI application for Schema Migration OpenEnv.
-
-Uses create_app() from openenv-core, which auto-generates all standard endpoints:
-    GET  /health     — {"status": "healthy"}
-    GET  /metadata   — environment name + description
-    GET  /schema     — action / observation / state JSON schemas
-    GET  /state      — current MigrationState
-    POST /reset      — reset episode, returns MigrationObservation
-    POST /step       — execute action, returns observation + reward + done
-    POST /mcp        — JSON-RPC 2.0 endpoint
-    WS   /ws         — WebSocket for persistent sessions
-    GET  /docs       — Swagger UI
-
-A singleton environment instance is used for HTTP calls so that state
-persists across the multi-step reset → step → ... → submit sequence that
-inference.py relies on.
+Official OpenEnv FastAPI app entrypoint.
 """
 
 from __future__ import annotations
@@ -22,57 +7,63 @@ from __future__ import annotations
 import os
 import sys
 
-# Ensure project root is importable when this module is loaded via uvicorn
 _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
-from openenv.core.env_server import create_app
-from server.environment import MigrationEnvironment
 from models import MigrationAction, MigrationObservation
+from server.environment import MigrationEnvironment
 
-# ---------------------------------------------------------------------------
-# Singleton: same instance returned for every HTTP call so state persists
-# across the multi-step episode that inference.py executes.
-# close() is a no-op on MigrationEnvironment, so the env is never destroyed.
-# ---------------------------------------------------------------------------
-_SINGLETON = MigrationEnvironment()
+try:
+    from openenv.core.env_server import create_fastapi_app
+
+    _SINGLETON = MigrationEnvironment()
+
+    def _env_factory() -> MigrationEnvironment:
+        return _SINGLETON
+
+    app = create_fastapi_app(
+        _env_factory,
+        MigrationAction,
+        MigrationObservation,
+        max_concurrent_envs=1,
+    )
+except ImportError:
+    from fastapi import FastAPI
+
+    app = FastAPI(title="schema-migration-openenv")
+    _ENV = MigrationEnvironment()
+
+    @app.get("/health")
+    def health():
+        return {"status": "healthy"}
+
+    @app.post("/reset")
+    def reset(payload: dict | None = None):
+        payload = payload or {}
+        obs = _ENV.reset(task=payload.get("task", "add_columns"))
+        return obs.model_dump()
+
+    @app.post("/step")
+    def step(payload: dict):
+        action_payload = payload.get("action", payload)
+        obs = _ENV.step(MigrationAction(**action_payload))
+        return {
+            "observation": obs.model_dump(),
+            "reward": obs.reward,
+            "done": obs.done,
+        }
+
+    @app.get("/state")
+    def state():
+        return _ENV.state.model_dump() if hasattr(_ENV.state, "model_dump") else _ENV.state.dict()
 
 
-def _env_factory() -> MigrationEnvironment:
-    return _SINGLETON
-
-
-app = create_app(
-    _env_factory,
-    MigrationAction,
-    MigrationObservation,
-    env_name="schema-migration-openenv",
-    max_concurrent_envs=1,
-)
-
-
-# ---------------------------------------------------------------------------
-# Custom endpoint: /grade
-# Not part of the standard SDK API but used by inference.py for the fatal
-# fallback path (reports seed-state score when the LLM is unavailable).
-# ---------------------------------------------------------------------------
-@app.post("/grade")
-def grade_current():
-    """Run the grader on the current DB without ending the episode."""
-    score, notes = _SINGLETON.grade()
-    return {"score": score, "notes": notes}
-
-
-# ---------------------------------------------------------------------------
-# Entry point for uv run server / pyproject.toml [project.scripts]
-# ---------------------------------------------------------------------------
-def main(host: str = "0.0.0.0", port: int = 7860) -> None:
-    """Start the server. Called by the 'server' console script."""
+def main() -> None:
     import uvicorn
 
-    port = int(os.getenv("PORT", str(port)))
-    uvicorn.run(app, host=host, port=port)
+    port = int(os.getenv("PORT", "7860"))
+    uvicorn.run("server.app:app", host="0.0.0.0", port=port, reload=False)
 
 
 if __name__ == "__main__":
